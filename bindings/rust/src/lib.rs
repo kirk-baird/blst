@@ -365,7 +365,7 @@ macro_rules! sig_variant_impl {
             }
         }
 
-        #[derive(Debug, Clone, Copy)]
+        #[derive(Default, Debug, Clone, Copy)]
         pub struct PublicKey {
             pub point: $pk_aff,
         }

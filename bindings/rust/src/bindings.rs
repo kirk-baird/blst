@@ -69,7 +69,7 @@ fn bindgen_test_layout_blst_fr() {
     );
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Default, Debug, Copy, Clone)]
 pub struct blst_fp {
     pub l: [limb_t; 6usize],
 }
@@ -97,7 +97,7 @@ fn bindgen_test_layout_blst_fp() {
     );
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Default, Debug, Copy, Clone)]
 pub struct blst_fp2 {
     pub fp: [blst_fp; 2usize],
 }
@@ -350,7 +350,7 @@ extern "C" {
     pub fn blst_fp12_is_one(a: *const blst_fp12) -> bool;
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Default, Debug, Copy, Clone)]
 pub struct blst_p1 {
     pub x: blst_fp,
     pub y: blst_fp,
@@ -400,7 +400,7 @@ fn bindgen_test_layout_blst_p1() {
     );
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Default, Debug, Copy, Clone)]
 pub struct blst_p1_affine {
     pub x: blst_fp,
     pub y: blst_fp,
@@ -484,7 +484,7 @@ extern "C" {
     pub fn blst_p1_affine_is_equal(a: *const blst_p1_affine, b: *const blst_p1_affine) -> bool;
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Default, Debug, Copy, Clone)]
 pub struct blst_p2 {
     pub x: blst_fp2,
     pub y: blst_fp2,
@@ -534,7 +534,7 @@ fn bindgen_test_layout_blst_p2() {
     );
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Default, Debug, Copy, Clone)]
 pub struct blst_p2_affine {
     pub x: blst_fp2,
     pub y: blst_fp2,
