@@ -563,7 +563,7 @@ macro_rules! sig_variant_impl {
             }
         }
 
-        #[derive(Debug, Clone, Copy)]
+        #[derive(Default, Debug, Clone, Copy)]
         pub struct Signature {
             pub point: $sig_aff,
         }
