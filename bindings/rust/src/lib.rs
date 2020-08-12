@@ -25,12 +25,6 @@ fn da_pool() -> ThreadPool {
 
 include!("bindings.rs");
 
-impl blst_fp12 {
-    pub fn new() -> Self {
-        unsafe { MaybeUninit::<Self>::uninit().assume_init() }
-    }
-}
-
 #[derive(Debug)]
 pub struct Pairing {
     v: Box<[u64]>,
@@ -193,8 +187,16 @@ impl Pairing {
         unsafe { blst_pairing_merge(self.ctx(), ctx1.const_ctx()) }
     }
 
-    pub fn finalverify(&self, gtsig: *const blst_fp12) -> bool {
-        unsafe { blst_pairing_finalverify(self.const_ctx(), gtsig) }
+    pub fn finalverify(&self, gtsig: Option<&blst_fp12>) -> bool {
+        unsafe {
+            blst_pairing_finalverify(
+                self.const_ctx(),
+                match gtsig {
+                    Some(gtsig) => gtsig,
+                    None => ptr::null(),
+                },
+            )
+        }
     }
 }
 
@@ -246,7 +248,7 @@ macro_rules! sig_variant_impl {
         $sig_add_or_dbl_aff:ident,
     ) => {
         /// Secret Key
-        #[derive(Debug, Clone)]
+        #[derive(Default, Debug, Clone)]
         pub struct SecretKey {
             pub value: blst_scalar,
         }
@@ -260,38 +262,34 @@ macro_rules! sig_variant_impl {
                 if ikm.len() < 32 {
                     return Err(BLST_ERROR::BLST_BAD_ENCODING);
                 }
-                let mut sk = std::mem::MaybeUninit::<blst_scalar>::uninit();
+                let mut sk = SecretKey::default();
                 unsafe {
                     blst_keygen(
-                        sk.as_mut_ptr(),
+                        &mut sk.value,
                         ikm.as_ptr(),
                         ikm.len(),
                         key_info.as_ptr(),
                         key_info.len(),
                     );
-                    Ok(Self {
-                        value: sk.assume_init(),
-                    })
                 }
+                Ok(sk)
             }
 
             // sk_to_pk
             pub fn sk_to_pk(&self) -> PublicKey {
                 // TODO - would the user like the serialized/compressed pk as well?
-                let mut pk_aff = std::mem::MaybeUninit::<$pk_aff>::uninit();
+                let mut pk_aff = PublicKey::default();
                 //let mut pk_ser = [0u8; $pk_ser_size];
 
                 unsafe {
                     $sk_to_pk(
                         //pk_ser.as_mut_ptr(),
-                        std::ptr::null_mut(),
-                        pk_aff.as_mut_ptr(),
+                        ptr::null_mut(),
+                        &mut pk_aff.point,
                         &self.value,
                     );
-                    PublicKey {
-                        point: pk_aff.assume_init(),
-                    }
                 }
+                pk_aff
             }
 
             // Sign
@@ -302,12 +300,12 @@ macro_rules! sig_variant_impl {
                 aug: &[u8],
             ) -> Signature {
                 // TODO - would the user like the serialized/compressed sig as well?
-                let mut q = std::mem::MaybeUninit::<$sig>::uninit();
-                let mut sig_aff = std::mem::MaybeUninit::<$sig_aff>::uninit();
+                let mut q = <$sig>::default();
+                let mut sig_aff = <$sig_aff>::default();
                 //let mut sig_ser = [0u8; $sig_ser_size];
                 unsafe {
                     $hash_or_encode_to(
-                        q.as_mut_ptr(),
+                        &mut q,
                         msg.as_ptr(),
                         msg.len(),
                         dst.as_ptr(),
@@ -315,16 +313,9 @@ macro_rules! sig_variant_impl {
                         aug.as_ptr(),
                         aug.len(),
                     );
-                    $sign(
-                        std::ptr::null_mut(),
-                        sig_aff.as_mut_ptr(),
-                        q.as_ptr(),
-                        &self.value,
-                    );
-                    Signature {
-                        point: sig_aff.assume_init(),
-                    }
+                    $sign(ptr::null_mut(), &mut sig_aff, &q, &self.value);
                 }
+                Signature { point: sig_aff }
             }
 
             // TODO - formally speaking application is entitled to have
@@ -344,16 +335,14 @@ macro_rules! sig_variant_impl {
 
             // deserialize
             pub fn deserialize(sk_in: &[u8]) -> Result<Self, BLST_ERROR> {
-                let mut sk = std::mem::MaybeUninit::<blst_scalar>::uninit();
+                let mut sk = blst_scalar::default();
                 unsafe {
-                    blst_scalar_from_bendian(sk.as_mut_ptr(), sk_in.as_ptr());
-                    if !blst_scalar_fr_check(sk.as_ptr()) {
+                    blst_scalar_from_bendian(&mut sk, sk_in.as_ptr());
+                    if !blst_scalar_fr_check(&sk) {
                         return Err(BLST_ERROR::BLST_BAD_ENCODING);
                     }
-                    Ok(Self {
-                        value: sk.assume_init(),
-                    })
                 }
+                Ok(Self { value: sk })
             }
 
             pub fn to_bytes(&self) -> [u8; 32] {
@@ -387,49 +376,43 @@ macro_rules! sig_variant_impl {
             }
 
             pub fn from_aggregate(agg_pk: &AggregatePublicKey) -> Self {
-                let mut pk_aff = std::mem::MaybeUninit::<$pk_aff>::uninit();
+                let mut pk_aff = <$pk_aff>::default();
                 unsafe {
-                    $pk_to_aff(pk_aff.as_mut_ptr(), &agg_pk.point);
-                    Self {
-                        point: pk_aff.assume_init(),
-                    }
+                    $pk_to_aff(&mut pk_aff, &agg_pk.point);
                 }
+                Self { point: pk_aff }
             }
 
             // Serdes
 
             pub fn compress(&self) -> [u8; $pk_comp_size] {
-                let mut pk = std::mem::MaybeUninit::<$pk>::uninit();
+                let mut pk = <$pk>::default();
                 let mut pk_comp = [0u8; $pk_comp_size]; // TODO - no need to initialize
                 unsafe {
-                    $pk_from_aff(pk.as_mut_ptr(), &self.point);
-                    $pk_comp(pk_comp.as_mut_ptr(), pk.as_ptr());
+                    $pk_from_aff(&mut pk, &self.point);
+                    $pk_comp(pk_comp.as_mut_ptr(), &pk);
                 }
                 pk_comp
             }
 
             pub fn serialize(&self) -> [u8; $pk_ser_size] {
-                let mut pk = std::mem::MaybeUninit::<$pk>::uninit();
+                let mut pk = <$pk>::default();
                 let mut pk_out = [0u8; $pk_ser_size];
                 unsafe {
-                    $pk_from_aff(pk.as_mut_ptr(), &self.point);
-                    $pk_ser(pk_out.as_mut_ptr(), pk.as_ptr());
+                    $pk_from_aff(&mut pk, &self.point);
+                    $pk_ser(pk_out.as_mut_ptr(), &pk);
                 }
                 pk_out
             }
 
             pub fn uncompress(pk_comp: &[u8]) -> Result<Self, BLST_ERROR> {
                 if pk_comp.len() == $pk_comp_size {
-                    unsafe {
-                        let mut pk = MaybeUninit::<$pk_aff>::uninit();
-                        let err = $pk_uncomp(pk.as_mut_ptr(), pk_comp.as_ptr());
-                        if err != BLST_ERROR::BLST_SUCCESS {
-                            return Err(err);
-                        }
-                        Ok(Self {
-                            point: pk.assume_init(),
-                        })
+                    let mut pk = <$pk_aff>::default();
+                    let err = unsafe { $pk_uncomp(&mut pk, pk_comp.as_ptr()) };
+                    if err != BLST_ERROR::BLST_SUCCESS {
+                        return Err(err);
                     }
+                    Ok(Self { point: pk })
                 } else {
                     Err(BLST_ERROR::BLST_BAD_ENCODING)
                 }
@@ -439,16 +422,12 @@ macro_rules! sig_variant_impl {
                 if pk_in.len() == $pk_ser_size && (pk_in[0] & 0x80) == 0
                     || pk_in.len() == $pk_comp_size && (pk_in[0] & 0x80) != 0
                 {
-                    unsafe {
-                        let mut pk = MaybeUninit::<$pk_aff>::uninit();
-                        let err = $pk_deser(pk.as_mut_ptr(), pk_in.as_ptr());
-                        if err != BLST_ERROR::BLST_SUCCESS {
-                            return Err(err);
-                        }
-                        Ok(Self {
-                            point: pk.assume_init(),
-                        })
+                    let mut pk = <$pk_aff>::default();
+                    let err = unsafe { $pk_deser(&mut pk, pk_in.as_ptr()) };
+                    if err != BLST_ERROR::BLST_SUCCESS {
+                        return Err(err);
                     }
+                    Ok(Self { point: pk })
                 } else {
                     Err(BLST_ERROR::BLST_BAD_ENCODING)
                 }
@@ -482,40 +461,35 @@ macro_rules! sig_variant_impl {
 
         impl AggregatePublicKey {
             pub fn from_public_key(pk: &PublicKey) -> Self {
-                let mut agg_pk = std::mem::MaybeUninit::<$pk>::uninit();
+                let mut agg_pk = <$pk>::default();
                 unsafe {
-                    $pk_from_aff(agg_pk.as_mut_ptr(), &pk.point);
-                    Self {
-                        point: agg_pk.assume_init(),
-                    }
+                    $pk_from_aff(&mut agg_pk, &pk.point);
                 }
+                Self { point: agg_pk }
             }
 
             pub fn to_public_key(&self) -> PublicKey {
-                let mut pk = std::mem::MaybeUninit::<$pk_aff>::uninit();
+                let mut pk = <$pk_aff>::default();
                 unsafe {
-                    $pk_to_aff(pk.as_mut_ptr(), &self.point);
-                    PublicKey {
-                        point: pk.assume_init(),
-                    }
+                    $pk_to_aff(&mut pk, &self.point);
                 }
+                PublicKey { point: pk }
             }
 
             // Aggregate
             pub fn aggregate(pks: &[&PublicKey]) -> Self {
                 // TODO - handle case of zero length array? What to return then?
-                unsafe {
-                    let mut agg_pk =
-                        AggregatePublicKey::from_public_key(pks[0]);
-                    for s in pks.iter().skip(1) {
+                let mut agg_pk = AggregatePublicKey::from_public_key(pks[0]);
+                for s in pks.iter().skip(1) {
+                    unsafe {
                         $pk_add_or_dbl_aff(
                             &mut agg_pk.point,
                             &agg_pk.point,
                             &s.point,
                         );
                     }
-                    agg_pk
                 }
+                agg_pk
             }
 
             pub fn aggregate_serialized(
@@ -524,11 +498,11 @@ macro_rules! sig_variant_impl {
                 // TODO - handle case of zero length array?
                 // TODO - subgroup check
                 // TODO - threading
-                unsafe {
-                    let mut pk = PublicKey::from_bytes(pks[0])?;
-                    let mut agg_pk = AggregatePublicKey::from_public_key(&pk);
-                    for s in pks.iter().skip(1) {
-                        pk = PublicKey::from_bytes(s)?;
+                let mut pk = PublicKey::from_bytes(pks[0])?;
+                let mut agg_pk = AggregatePublicKey::from_public_key(&pk);
+                for s in pks.iter().skip(1) {
+                    pk = PublicKey::from_bytes(s)?;
+                    unsafe {
                         // TODO - does this need add_or_double?
                         $pk_add_or_dbl_aff(
                             &mut agg_pk.point,
@@ -536,8 +510,8 @@ macro_rules! sig_variant_impl {
                             &pk.point,
                         );
                     }
-                    Ok(agg_pk)
                 }
+                Ok(agg_pk)
             }
 
             pub fn add_aggregate(&mut self, agg_pk: &AggregatePublicKey) {
@@ -644,7 +618,7 @@ macro_rules! sig_variant_impl {
                     });
                 }
 
-                let mut gtsig = blst_fp12::new();
+                let mut gtsig = blst_fp12::default();
                 if valid.load(Ordering::Relaxed) {
                     Pairing::aggregated(&mut gtsig, &self.point);
                 }
@@ -654,7 +628,9 @@ macro_rules! sig_variant_impl {
                     acc.merge(&rx.recv().unwrap());
                 }
 
-                if valid.load(Ordering::Relaxed) && acc.finalverify(&gtsig) {
+                if valid.load(Ordering::Relaxed)
+                    && acc.finalverify(Some(&gtsig))
+                {
                     BLST_ERROR::BLST_SUCCESS
                 } else {
                     BLST_ERROR::BLST_VERIFY_FAIL
@@ -791,8 +767,7 @@ macro_rules! sig_variant_impl {
                     acc.merge(&rx.recv().unwrap());
                 }
 
-                if valid.load(Ordering::Relaxed) && acc.finalverify(ptr::null())
-                {
+                if valid.load(Ordering::Relaxed) && acc.finalverify(None) {
                     BLST_ERROR::BLST_SUCCESS
                 } else {
                     BLST_ERROR::BLST_VERIFY_FAIL
@@ -800,19 +775,17 @@ macro_rules! sig_variant_impl {
             }
 
             pub fn from_aggregate(agg_sig: &AggregateSignature) -> Self {
-                let mut sig_aff = std::mem::MaybeUninit::<$sig_aff>::uninit();
+                let mut sig_aff = <$sig_aff>::default();
                 unsafe {
-                    $sig_to_aff(sig_aff.as_mut_ptr(), &agg_sig.point);
-                    Self {
-                        point: sig_aff.assume_init(),
-                    }
+                    $sig_to_aff(&mut sig_aff, &agg_sig.point);
                 }
+                Self { point: sig_aff }
             }
 
             pub fn compress(&self) -> [u8; $sig_comp_size] {
-                let mut sig = std::mem::MaybeUninit::<$sig>::uninit();
                 let mut sig_comp = [0; $sig_comp_size];
                 unsafe {
+                    let mut sig = MaybeUninit::<$sig>::uninit();
                     $sig_from_aff(sig.as_mut_ptr(), &self.point);
                     $sig_comp(sig_comp.as_mut_ptr(), sig.as_ptr());
                     //$sig_comp(sig_comp.as_mut_ptr(), &self.point);
@@ -821,9 +794,9 @@ macro_rules! sig_variant_impl {
             }
 
             pub fn serialize(&self) -> [u8; $sig_ser_size] {
-                let mut sig = std::mem::MaybeUninit::<$sig>::uninit();
                 let mut sig_out = [0; $sig_ser_size];
                 unsafe {
+                    let mut sig = MaybeUninit::<$sig>::uninit();
                     $sig_from_aff(sig.as_mut_ptr(), &self.point);
                     $sig_ser(sig_out.as_mut_ptr(), sig.as_ptr());
                     //$sig_ser(sig_out.as_mut_ptr(), &self.point);
@@ -833,17 +806,13 @@ macro_rules! sig_variant_impl {
 
             pub fn uncompress(sig_comp: &[u8]) -> Result<Self, BLST_ERROR> {
                 if sig_comp.len() == $sig_comp_size {
-                    unsafe {
-                        let mut sig = MaybeUninit::<$sig_aff>::uninit();
-                        let err =
-                            $sig_uncomp(sig.as_mut_ptr(), sig_comp.as_ptr());
-                        if err != BLST_ERROR::BLST_SUCCESS {
-                            return Err(err);
-                        }
-                        Ok(Self {
-                            point: sig.assume_init(),
-                        })
+                    let mut sig = <$sig_aff>::default();
+                    let err =
+                        unsafe { $sig_uncomp(&mut sig, sig_comp.as_ptr()) };
+                    if err != BLST_ERROR::BLST_SUCCESS {
+                        return Err(err);
                     }
+                    Ok(Self { point: sig })
                 } else {
                     Err(BLST_ERROR::BLST_BAD_ENCODING)
                 }
@@ -853,16 +822,12 @@ macro_rules! sig_variant_impl {
                 if sig_in.len() == $sig_ser_size && (sig_in[0] & 0x80) == 0
                     || sig_in.len() == $sig_comp_size && (sig_in[0] & 0x80) != 0
                 {
-                    unsafe {
-                        let mut sig = MaybeUninit::<$sig_aff>::uninit();
-                        let err = $sig_deser(sig.as_mut_ptr(), sig_in.as_ptr());
-                        if err != BLST_ERROR::BLST_SUCCESS {
-                            return Err(err);
-                        }
-                        Ok(Self {
-                            point: sig.assume_init(),
-                        })
+                    let mut sig = <$sig_aff>::default();
+                    let err = unsafe { $sig_deser(&mut sig, sig_in.as_ptr()) };
+                    if err != BLST_ERROR::BLST_SUCCESS {
+                        return Err(err);
                     }
+                    Ok(Self { point: sig })
                 } else {
                     Err(BLST_ERROR::BLST_BAD_ENCODING)
                 }
@@ -896,32 +861,27 @@ macro_rules! sig_variant_impl {
 
         impl AggregateSignature {
             pub fn from_signature(sig: &Signature) -> Self {
-                let mut agg_sig = std::mem::MaybeUninit::<$sig>::uninit();
+                let mut agg_sig = <$sig>::default();
                 unsafe {
-                    $sig_from_aff(agg_sig.as_mut_ptr(), &sig.point);
-                    Self {
-                        point: agg_sig.assume_init(),
-                    }
+                    $sig_from_aff(&mut agg_sig, &sig.point);
                 }
+                Self { point: agg_sig }
             }
 
             pub fn to_signature(&self) -> Signature {
-                let mut sig = std::mem::MaybeUninit::<$sig_aff>::uninit();
+                let mut sig = <$sig_aff>::default();
                 unsafe {
-                    $sig_to_aff(sig.as_mut_ptr(), &self.point);
-                    Signature {
-                        point: sig.assume_init(),
-                    }
+                    $sig_to_aff(&mut sig, &self.point);
                 }
+                Signature { point: sig }
             }
 
             // Aggregate
             pub fn aggregate(sigs: &[&Signature]) -> Self {
                 // TODO - handle case of zero length array?
-                unsafe {
-                    let mut agg_sig =
-                        AggregateSignature::from_signature(sigs[0]);
-                    for s in sigs.iter().skip(1) {
+                let mut agg_sig = AggregateSignature::from_signature(sigs[0]);
+                for s in sigs.iter().skip(1) {
+                    unsafe {
                         // TODO - does this need add_or_double?
                         $sig_add_or_dbl_aff(
                             &mut agg_sig.point,
@@ -929,8 +889,8 @@ macro_rules! sig_variant_impl {
                             &s.point,
                         );
                     }
-                    agg_sig
                 }
+                agg_sig
             }
 
             pub fn aggregate_serialized(
@@ -939,10 +899,10 @@ macro_rules! sig_variant_impl {
                 // TODO - handle case of zero length array?
                 // TODO - subgroup check
                 // TODO - threading
-                unsafe {
-                    let mut sig = Signature::from_bytes(sigs[0])?;
-                    let mut agg_sig = AggregateSignature::from_signature(&sig);
-                    for s in sigs.iter().skip(1) {
+                let mut sig = Signature::from_bytes(sigs[0])?;
+                let mut agg_sig = AggregateSignature::from_signature(&sig);
+                for s in sigs.iter().skip(1) {
+                    unsafe {
                         sig = Signature::from_bytes(s)?;
                         // TODO - does this need add_or_double?
                         $sig_add_or_dbl_aff(
@@ -951,8 +911,8 @@ macro_rules! sig_variant_impl {
                             &sig.point,
                         );
                     }
-                    Ok(agg_sig)
                 }
+                Ok(agg_sig)
             }
 
             pub fn add_aggregate(&mut self, agg_sig: &AggregateSignature) {
@@ -989,19 +949,11 @@ macro_rules! sig_variant_impl {
                 let mut ikm = [0u8; 32];
                 rng.fill_bytes(&mut ikm);
 
-                let mut sk = std::mem::MaybeUninit::<blst_scalar>::uninit();
+                let mut sk = <blst_scalar>::default();
                 unsafe {
-                    blst_keygen(
-                        sk.as_mut_ptr(),
-                        ikm.as_ptr(),
-                        32,
-                        std::ptr::null(),
-                        0,
-                    );
-                    SecretKey {
-                        value: sk.assume_init(),
-                    }
+                    blst_keygen(&mut sk, ikm.as_ptr(), 32, ptr::null(), 0);
                 }
+                SecretKey { value: sk }
             }
 
             #[test]
@@ -1185,8 +1137,7 @@ macro_rules! sig_variant_impl {
                     // create random values
                     let mut vals = [0u64; 4];
                     vals[0] = rng.next_u64();
-                    let mut rand_i =
-                        std::mem::MaybeUninit::<blst_scalar>::uninit();
+                    let mut rand_i = MaybeUninit::<blst_scalar>::uninit();
                     unsafe {
                         blst_scalar_from_uint64(
                             rand_i.as_mut_ptr(),
